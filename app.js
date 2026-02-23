@@ -18,6 +18,12 @@ const downloadHint   = document.getElementById('downloadHint');
 
 // ── State ─────────────────────────────────────────────────────
 const MAX_FILES      = 20;
+const DEFAULT_SUBJECT = 'MODELO 347';
+const MIN_DOWNLOAD_DELAY_MS = 400;
+const MAX_DOWNLOAD_DELAY_MS = 800;
+const RECIPIENT_SEARCH_HEIGHT_RATIO = 0.35;
+const NO_DETECTED_EMAIL_PREFIX = 'NDE';
+const SUBJECT_ANCHOR_REGEX = /Dto\.?\s*de\s*Contabilidad/i;
 let selectedFiles    = [];
 let results          = [];
 let signaturesCache  = {};          // id → html string
@@ -181,7 +187,7 @@ async function downloadAllResults() {
   for (let i = 0; i < readyResults.length; i++) {
     const filename = resolvedNames[i];
     downloadBlob(readyResults[i].eml, filename, 'message/rfc822');
-    const delay = 400 + Math.random() * 400;
+    const delay = MIN_DOWNLOAD_DELAY_MS + Math.random() * (MAX_DOWNLOAD_DELAY_MS - MIN_DOWNLOAD_DELAY_MS);
     await new Promise(resolve => setTimeout(resolve, delay));
   }
 }
@@ -201,7 +207,7 @@ function renderResults() {
 
   const rows = results.map((result, index) => {
     const recipient = result.recipient || 'UNKNOWN';
-    const toValue = result.toEmail || 'NDE';
+    const toValue = result.toEmail || NO_DETECTED_EMAIL_PREFIX;
     const subject = result.subject || '';
     const fileName = finalNamesByIndex.get(index) || (result.baseFilename ? `${result.baseFilename}.eml` : '');
     const statusClass = result.status ? result.status.toLowerCase() : 'pending';
@@ -237,9 +243,9 @@ function renderResults() {
 function buildOutputBaseFilename({ recipient, toEmail, originalName }) {
   const originalBase = originalName.replace(/\.[^.]+$/, '');
   if (!recipient) {
-    return sanitizeFileName(`NDE_UNKNOWN_${originalBase}`);
+    return sanitizeFileName(`${NO_DETECTED_EMAIL_PREFIX}_UNKNOWN_${originalBase}`);
   }
-  const prefix = toEmail ? '' : 'NDE_';
+  const prefix = toEmail ? '' : `${NO_DETECTED_EMAIL_PREFIX}_`;
   return sanitizeFileName(`${prefix}${recipient}`);
 }
 
@@ -651,7 +657,7 @@ function extractRecipient(page) {
   const { textItems, height } = page;
   const sorted = [...textItems].sort((a, b) => a.y - b.y || a.x - b.x);
   const lines = groupIntoLines(sorted);
-  const upperLimit = height * 0.35;
+  const upperLimit = height * RECIPIENT_SEARCH_HEIGHT_RATIO;
 
   for (const line of lines) {
     if (line.y > upperLimit) continue;
@@ -666,7 +672,7 @@ function extractRecipient(page) {
   return '';
 }
 
-const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
+const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const EMAIL_BLACKLIST = new Set(['conta@nmeconomista.com']);
 
 function extractToEmail(page) {
@@ -703,29 +709,27 @@ function extractToEmail(page) {
 }
 
 function extractSubject(page) {
-  if (!page) return 'MODELO 347';
+  if (!page) return DEFAULT_SUBJECT;
   const lines = groupIntoLines(page.textItems).sort((a, b) => a.y - b.y || a.x - b.x);
-  const anchorRegex = /Dto\.?\s*de\s*Contabilidad/i;
-
   for (let i = 0; i < lines.length; i++) {
     const text = buildLineText(lines[i].items);
-    if (anchorRegex.test(text)) {
+    if (SUBJECT_ANCHOR_REGEX.test(text)) {
       for (let j = i - 1; j >= 0; j--) {
         const signer = buildLineText(lines[j].items);
         if (signer) {
-          return `MODELO 347 ${signer}`;
+          return `${DEFAULT_SUBJECT} ${signer}`;
         }
       }
       break;
     }
   }
-  return 'MODELO 347';
+  return DEFAULT_SUBJECT;
 }
 
 function collectEmails(text, y, list) {
-  const matches = text.match(EMAIL_REGEX);
-  if (!matches) return;
-  for (const raw of matches) {
+  const matches = text.matchAll(new RegExp(EMAIL_REGEX.source, 'ig'));
+  for (const match of matches) {
+    const raw = match[0];
     const email = raw.toLowerCase();
     if (EMAIL_BLACKLIST.has(email)) continue;
     list.push({ email, y });
@@ -733,14 +737,10 @@ function collectEmails(text, y, list) {
 }
 
 function findFirstEmail(text) {
-  const matches = text.match(EMAIL_REGEX);
-  if (!matches) return '';
-  for (const raw of matches) {
-    const email = raw.toLowerCase();
-    if (EMAIL_BLACKLIST.has(email)) continue;
-    return email;
-  }
-  return '';
+  const match = text.match(EMAIL_REGEX);
+  if (!match) return '';
+  const email = match[0].toLowerCase();
+  return EMAIL_BLACKLIST.has(email) ? '' : email;
 }
 
 // ══════════════════════════════════════════════════════════════

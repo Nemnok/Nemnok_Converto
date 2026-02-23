@@ -749,6 +749,7 @@ function sanitizeFileName(name) {
 
 function buildEml(bodyHtml, { toEmail, subject }) {
   const date     = formatRfc2822Date(new Date());
+  const toHeaderValue = toEmail ? toEmail : 'undisclosed-recipients:;';
 
   const fullHtml = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
@@ -759,7 +760,7 @@ ${bodyHtml}
   const lines = [
     'MIME-Version: 1.0',
     `Date: ${date}`,
-    `To: ${toEmail || ''}`,
+    `To: ${toHeaderValue}`,
     `Subject: ${rfc2047EncodeHeaderValue(subject)}`,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',

@@ -86,6 +86,7 @@ generateBtn.addEventListener('click', async () => {
     toEmail: '',
     subject: '',
     baseFilename: '',
+    diagnostics: '',
     eml: '',
     status: 'Pending',
     error: ''
@@ -167,13 +168,14 @@ async function processPdfFile(file) {
   }
 
   const eml = buildEml(bodyHtml, { toEmail, subject });
+  const diagnostics = buildDiagnostics(bodyHtml, eml);
   const baseFilename = buildOutputBaseFilename({
     recipient,
     toEmail,
     originalName: file.name
   });
 
-  return { recipient, toEmail, subject, baseFilename, eml };
+  return { recipient, toEmail, subject, baseFilename, diagnostics, eml };
 }
 
 async function downloadAllResults() {
@@ -212,6 +214,7 @@ function renderResults() {
     const fileName = finalNamesByIndex.get(index) || (result.baseFilename ? `${result.baseFilename}.eml` : '');
     const statusClass = result.status ? result.status.toLowerCase() : 'pending';
     const error = result.error ? ` (${result.error})` : '';
+    const diagnostics = result.diagnostics || '';
 
     return `<tr>
       <td>${escapeHtml(result.file.name)}</td>
@@ -219,6 +222,7 @@ function renderResults() {
       <td>${escapeHtml(toValue)}</td>
       <td>${escapeHtml(subject)}</td>
       <td>${escapeHtml(fileName)}</td>
+      <td>${escapeHtml(diagnostics)}</td>
       <td><span class="status-pill status-${statusClass}">${escapeHtml(result.status)}${escapeHtml(error)}</span></td>
     </tr>`;
   }).join('');
@@ -232,6 +236,7 @@ function renderResults() {
           <th>To</th>
           <th>Subject</th>
           <th>EML file</th>
+          <th>Diag</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -681,6 +686,7 @@ function extractToEmail(page) {
 
   for (const line of lines) {
     const text = buildLineText(line.items);
+    if (!text) continue;
     const anchorMatch = text.match(/^A\s+(.+)/i);
     if (anchorMatch) {
       const compact = anchorMatch[1].replace(/\s+/g, '');
@@ -688,24 +694,7 @@ function extractToEmail(page) {
       if (anchorEmail) return anchorEmail;
     }
   }
-
-  const candidates = [];
-  for (const line of lines) {
-    const text = buildLineText(line.items);
-    if (!text) continue;
-    collectEmails(text, line.y, candidates);
-    const compact = text.replace(/\s+/g, '');
-    if (compact !== text) {
-      collectEmails(compact, line.y, candidates);
-    }
-  }
-
-  if (!candidates.length) return '';
-  candidates.sort((a, b) => a.y - b.y);
-  const topY = candidates[0].y;
-  const topCandidates = candidates.filter(c => Math.abs(c.y - topY) <= EPS);
-  const uniqueEmails = Array.from(new Set(topCandidates.map(c => c.email)));
-  return uniqueEmails.length === 1 ? uniqueEmails[0] : '';
+  return '';
 }
 
 function extractSubject(page) {
@@ -759,7 +748,8 @@ function sanitizeFileName(name) {
 // ══════════════════════════════════════════════════════════════
 
 function buildEml(bodyHtml, { toEmail, subject }) {
-  const date     = new Date().toUTCString();
+  const date     = formatRfc2822Date(new Date());
+  const toHeaderValue = toEmail ? toEmail : 'undisclosed-recipients:;';
 
   const fullHtml = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
@@ -770,16 +760,44 @@ ${bodyHtml}
   const lines = [
     'MIME-Version: 1.0',
     `Date: ${date}`,
-    toEmail ? `To: ${toEmail}` : null,
+    `To: ${toHeaderValue}`,
     `Subject: ${rfc2047EncodeHeaderValue(subject)}`,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     emlBodyBase64EncodeWithWrap(fullHtml),
     ''
-  ].filter(Boolean);
+  ];
 
   return lines.join('\r\n');
+}
+
+function formatRfc2822Date(date) {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dayName = days[date.getUTCDay()];
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = months[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  const hour = String(date.getUTCHours()).padStart(2, '0');
+  const minute = String(date.getUTCMinutes()).padStart(2, '0');
+  const second = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${dayName}, ${day} ${month} ${year} ${hour}:${minute}:${second} +0000`;
+}
+
+function buildDiagnostics(bodyHtml, eml) {
+  const diagnostics = [];
+  if (!bodyHtml || !bodyHtml.trim()) {
+    diagnostics.push('HTML empty');
+  }
+  const separatorIndex = eml.indexOf('\r\n\r\n');
+  if (separatorIndex === -1) {
+    diagnostics.push('EML empty');
+  } else {
+    const emlBody = eml.slice(separatorIndex + 4).trim();
+    if (!emlBody) diagnostics.push('EML empty');
+  }
+  return diagnostics.length ? diagnostics.join('; ') : 'OK';
 }
 
 function rfc2047EncodeHeaderValue(value) {

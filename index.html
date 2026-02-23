@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Converto – PDF to EML</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Calibri, Arial, sans-serif;
+      background: #f4f6f8;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 40px 16px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.1);
+      padding: 32px;
+      max-width: 480px;
+      width: 100%;
+    }
+    h1 { font-size: 22px; margin-bottom: 24px; color: #222; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; color: #444; }
+    input[type="file"], select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 18px;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #0078d4;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    button:hover { background: #005fa3; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    #status {
+      margin-top: 16px;
+      font-size: 14px;
+      color: #555;
+      min-height: 20px;
+    }
+    #status.error { color: #c00; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Converto &mdash; PDF to EML</h1>
+
+    <label for="pdfFile">Select PDF</label>
+    <input type="file" id="pdfFile" accept=".pdf">
+
+    <label for="signatureSelect">Signature</label>
+    <select id="signatureSelect">
+      <option value="">— none —</option>
+    </select>
+
+    <button id="generateBtn" disabled>Generate EML</button>
+    <div id="status"></div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

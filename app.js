@@ -687,8 +687,7 @@ function extractToEmail(page) {
   for (const line of lines) {
     const text = buildLineText(line.items);
     if (!text) continue;
-    const trimmed = text.trimStart();
-    const anchorMatch = trimmed.match(/^A\s+(.+)/i);
+    const anchorMatch = text.match(/^A\s+(.+)/i);
     if (anchorMatch) {
       const compact = anchorMatch[1].replace(/\s+/g, '');
       const anchorEmail = findFirstEmail(compact);
@@ -762,7 +761,7 @@ ${bodyHtml}
     `Date: ${date}`,
     `To: ${toEmail || ''}`,
     `Subject: ${rfc2047EncodeHeaderValue(subject)}`,
-    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     emlBodyBase64EncodeWithWrap(fullHtml),
@@ -773,7 +772,16 @@ ${bodyHtml}
 }
 
 function formatRfc2822Date(date) {
-  return date.toUTCString().replace('GMT', '+0000');
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dayName = days[date.getUTCDay()];
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = months[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  const hour = String(date.getUTCHours()).padStart(2, '0');
+  const minute = String(date.getUTCMinutes()).padStart(2, '0');
+  const second = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${dayName}, ${day} ${month} ${year} ${hour}:${minute}:${second} +0000`;
 }
 
 function buildDiagnostics(bodyHtml, eml) {

@@ -25,7 +25,7 @@
     }
     h1 { font-size: 22px; margin-bottom: 24px; color: #222; }
     label { display: block; font-weight: 600; margin-bottom: 6px; color: #444; }
-    input[type="file"], select {
+    input[type="file"], input[type="password"], select {
       width: 100%;
       padding: 8px 10px;
       border: 1px solid #ccc;
@@ -54,10 +54,21 @@
       min-height: 20px;
     }
     #status.error { color: #c00; }
+    #pwError { color: #c00; font-size: 13px; margin-top: 8px; min-height: 18px; }
   </style>
 </head>
 <body>
-  <div class="card">
+  <!-- Password gate -->
+  <div id="pwGate" class="card">
+    <h1>Converto &mdash; PDF to EML</h1>
+    <label for="pwInput">Password</label>
+    <input type="password" id="pwInput" placeholder="Enter password">
+    <button id="pwBtn">Unlock</button>
+    <div id="pwError"></div>
+  </div>
+
+  <!-- Main app (hidden until password is correct) -->
+  <div id="appCard" class="card" style="display:none;">
     <h1>Converto &mdash; PDF to EML</h1>
 
     <label for="pdfFile">Select PDF</label>
@@ -71,6 +82,33 @@
     <button id="generateBtn" disabled>Generate EML</button>
     <div id="status"></div>
   </div>
+
+  <script>
+    (function () {
+      const CORRECT = 'NM2026Nemnok';
+      const pwBtn   = document.getElementById('pwBtn');
+      const pwInput = document.getElementById('pwInput');
+      const pwError = document.getElementById('pwError');
+      const pwGate  = document.getElementById('pwGate');
+      const appCard = document.getElementById('appCard');
+
+      function tryUnlock() {
+        if (pwInput.value === CORRECT) {
+          pwGate.style.display  = 'none';
+          appCard.style.display = 'block';
+        } else {
+          pwError.textContent = 'Incorrect password. Please try again.';
+          pwInput.value = '';
+          pwInput.focus();
+        }
+      }
+
+      pwBtn.addEventListener('click', tryUnlock);
+      pwInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') tryUnlock();
+      });
+    })();
+  </script>
 
   <script type="module" src="app.js"></script>
 </body>

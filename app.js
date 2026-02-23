@@ -11,10 +11,21 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const pdfInput       = document.getElementById('pdfFile');
 const sigSelect      = document.getElementById('signatureSelect');
 const generateBtn    = document.getElementById('generateBtn');
+const downloadAllBtn = document.getElementById('downloadAllBtn');
 const statusEl       = document.getElementById('status');
+const resultsEl      = document.getElementById('results');
+const downloadHint   = document.getElementById('downloadHint');
 
 // ── State ─────────────────────────────────────────────────────
-let selectedFile     = null;
+const MAX_FILES      = 20;
+const DEFAULT_SUBJECT = 'MODELO 347';
+const MIN_DOWNLOAD_DELAY_MS = 400;
+const MAX_DOWNLOAD_DELAY_MS = 800;
+const RECIPIENT_SEARCH_HEIGHT_RATIO = 0.35;
+const NO_DETECTED_EMAIL_PREFIX = 'NDE';
+const SUBJECT_ANCHOR_REGEX = /Dto\.?\s*de\s*Contabilidad/i;
+let selectedFiles    = [];
+let results          = [];
 let signaturesCache  = {};          // id → html string
 
 // ── Init: load signature manifest ─────────────────────────────
@@ -42,60 +53,210 @@ let signaturesCache  = {};          // id → html string
 
 // ── Events ────────────────────────────────────────────────────
 pdfInput.addEventListener('change', () => {
-  selectedFile = pdfInput.files[0] || null;
-  generateBtn.disabled = !selectedFile;
+  selectedFiles = Array.from(pdfInput.files || []);
+  downloadAllBtn.disabled = true;
+  downloadHint.style.display = 'none';
+  results = [];
+  renderResults();
+  if (selectedFiles.length > MAX_FILES) {
+    setStatus(`Error: Maximum ${MAX_FILES} PDFs allowed.`, true);
+    generateBtn.disabled = true;
+    return;
+  }
+  if (!selectedFiles.length) {
+    setStatus('');
+    generateBtn.disabled = true;
+    return;
+  }
+  setStatus(`${selectedFiles.length} PDF(s) selected.`);
+  generateBtn.disabled = false;
 });
 
 generateBtn.addEventListener('click', async () => {
-  if (!selectedFile) return;
-  generateBtn.disabled = true;
-  setStatus('Processing PDF…');
-  try {
-    const arrayBuf = await selectedFile.arrayBuffer();
-    const pdf      = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
-
-    // 1. Extract pages
-    const pages = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      pages.push(await extractPage(page));
-    }
-
-    // 2. Recipient from first page
-    const recipient = extractRecipient(pages[0].textItems);
-
-    // 3. Build HTML body
-    let bodyHtml = '';
-    for (const pg of pages) {
-      bodyHtml += buildPageHtml(pg);
-    }
-
-    // 4. Append signature
-    const sigId = sigSelect.value;
-    if (sigId && signaturesCache[sigId]) {
-      bodyHtml += '<br>' + signaturesCache[sigId];
-    }
-
-    // 5. Build EML
-    const eml = buildEml(bodyHtml);
-
-    // 6. Download
-    const filename = sanitizeFilename(recipient) + '.eml';
-    downloadBlob(eml, filename, 'message/rfc822');
-
-    setStatus('Done – downloaded ' + filename);
-  } catch (err) {
-    console.error(err);
-    setStatus('Error: ' + err.message, true);
-  } finally {
-    generateBtn.disabled = false;
+  if (!selectedFiles.length) return;
+  if (selectedFiles.length > MAX_FILES) {
+    setStatus(`Error: Maximum ${MAX_FILES} PDFs allowed.`, true);
+    return;
   }
+
+  setUiDisabled(true);
+  results = selectedFiles.map(file => ({
+    file,
+    recipient: '',
+    toEmail: '',
+    subject: '',
+    baseFilename: '',
+    eml: '',
+    status: 'Pending',
+    error: ''
+  }));
+  renderResults();
+
+  let completed = 0;
+  const total = results.length;
+  setStatus(`Generating EML… (0/${total})`);
+
+  for (const result of results) {
+    result.status = 'Processing';
+    renderResults();
+    try {
+      const processed = await processPdfFile(result.file);
+      Object.assign(result, processed, { status: 'Done', error: '' });
+    } catch (err) {
+      console.error(err);
+      result.status = 'Error';
+      result.error = err.message || 'Unknown error';
+    }
+    completed += 1;
+    setStatus(`Generating EML… (${completed}/${total})`);
+    renderResults();
+  }
+
+  const successCount = results.filter(r => r.status === 'Done').length;
+  setStatus(`Generation complete. ${successCount}/${total} file(s) ready.`);
+  downloadAllBtn.disabled = successCount === 0;
+  downloadHint.style.display = successCount > 0 ? 'block' : 'none';
+  setUiDisabled(false);
+});
+
+downloadAllBtn.addEventListener('click', async () => {
+  if (downloadAllBtn.disabled) return;
+  downloadAllBtn.disabled = true;
+  await downloadAllResults();
+  downloadAllBtn.disabled = false;
 });
 
 // ── Helpers ───────────────────────────────────────────────────
 function setStatus(msg, isError) {
   statusEl.textContent = msg;
   statusEl.className   = isError ? 'error' : '';
+}
+
+function setUiDisabled(isDisabled) {
+  pdfInput.disabled = isDisabled;
+  sigSelect.disabled = isDisabled;
+  generateBtn.disabled = isDisabled || !selectedFiles.length;
+  if (isDisabled) {
+    downloadAllBtn.disabled = true;
+  }
+}
+
+async function processPdfFile(file) {
+  const arrayBuf = await file.arrayBuffer();
+  const pdf      = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    pages.push(await extractPage(page));
+  }
+
+  const firstPage = pages[0];
+  const recipient = extractRecipient(firstPage);
+  const toEmail = extractToEmail(firstPage);
+  const subject = extractSubject(firstPage);
+
+  let bodyHtml = '';
+  for (const pg of pages) {
+    bodyHtml += buildPageHtml(pg);
+  }
+
+  const sigId = sigSelect.value;
+  if (sigId && signaturesCache[sigId]) {
+    bodyHtml += '<br>' + signaturesCache[sigId];
+  }
+
+  const eml = buildEml(bodyHtml, { toEmail, subject });
+  const baseFilename = buildOutputBaseFilename({
+    recipient,
+    toEmail,
+    originalName: file.name
+  });
+
+  return { recipient, toEmail, subject, baseFilename, eml };
+}
+
+async function downloadAllResults() {
+  const readyResults = results.filter(result => result.status === 'Done');
+  if (!readyResults.length) return;
+
+  const resolvedNames = resolveFileNameCollisions(
+    readyResults.map(result => result.baseFilename)
+  );
+
+  for (let i = 0; i < readyResults.length; i++) {
+    const filename = resolvedNames[i];
+    downloadBlob(readyResults[i].eml, filename, 'message/rfc822');
+    const delay = MIN_DOWNLOAD_DELAY_MS + Math.random() * (MAX_DOWNLOAD_DELAY_MS - MIN_DOWNLOAD_DELAY_MS);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+}
+
+function renderResults() {
+  if (!results.length) {
+    resultsEl.innerHTML = '';
+    return;
+  }
+
+  const doneEntries = results
+    .map((result, index) => ({ result, index }))
+    .filter(entry => entry.result.status === 'Done');
+  const resolvedNames = resolveFileNameCollisions(doneEntries.map(entry => entry.result.baseFilename));
+  const finalNamesByIndex = new Map();
+  doneEntries.forEach((entry, idx) => finalNamesByIndex.set(entry.index, resolvedNames[idx]));
+
+  const rows = results.map((result, index) => {
+    const recipient = result.recipient || 'UNKNOWN';
+    const toValue = result.toEmail || NO_DETECTED_EMAIL_PREFIX;
+    const subject = result.subject || '';
+    const fileName = finalNamesByIndex.get(index) || (result.baseFilename ? `${result.baseFilename}.eml` : '');
+    const statusClass = result.status ? result.status.toLowerCase() : 'pending';
+    const error = result.error ? ` (${result.error})` : '';
+
+    return `<tr>
+      <td>${escapeHtml(result.file.name)}</td>
+      <td>${escapeHtml(recipient)}</td>
+      <td>${escapeHtml(toValue)}</td>
+      <td>${escapeHtml(subject)}</td>
+      <td>${escapeHtml(fileName)}</td>
+      <td><span class="status-pill status-${statusClass}">${escapeHtml(result.status)}${escapeHtml(error)}</span></td>
+    </tr>`;
+  }).join('');
+
+  resultsEl.innerHTML = `
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>PDF</th>
+          <th>Recipient</th>
+          <th>To</th>
+          <th>Subject</th>
+          <th>EML file</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function buildOutputBaseFilename({ recipient, toEmail, originalName }) {
+  const originalBase = originalName.replace(/\.[^.]+$/, '');
+  if (!recipient) {
+    return sanitizeFileName(`${NO_DETECTED_EMAIL_PREFIX}_UNKNOWN_${originalBase}`);
+  }
+  const prefix = toEmail ? '' : `${NO_DETECTED_EMAIL_PREFIX}_`;
+  return sanitizeFileName(`${prefix}${recipient}`);
+}
+
+function resolveFileNameCollisions(names) {
+  const counts = new Map();
+  return names.map(name => {
+    const safe = name || 'output';
+    const current = (counts.get(safe) || 0) + 1;
+    counts.set(safe, current);
+    return current === 1 ? `${safe}.eml` : `${safe} (${current}).eml`;
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -423,13 +584,42 @@ function groupIntoLines(items) {
   return lines;
 }
 
+const LINE_GAP = 2;
+
+function buildLineText(items) {
+  if (!items.length) return '';
+  const sorted = [...items].sort((a, b) => a.x - b.x);
+  let text = '';
+  let prev = null;
+
+  for (const item of sorted) {
+    const value = normalizePdfText(item.str);
+    if (!value) {
+      continue;
+    }
+    if (text) {
+      const gap = prev ? item.x - (prev.x + prev.w) : LINE_GAP + 1;
+      if (gap > LINE_GAP) {
+        text += ' ';
+      }
+    }
+    text += value;
+    prev = item;
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function normalizePdfText(str) {
+  return String(str || '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function renderTextLine(line) {
-  const parts = line.items
-    .sort((a, b) => a.x - b.x)
-    .map(it => escapeHtml(it.str))
-    .join(' ');
-  if (!parts.trim()) return '';
-  return `<p style="font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:2px 0;">${parts}</p>\n`;
+  const text = buildLineText(line.items);
+  if (!text) return '';
+  return `<p style="font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:2px 0;">${escapeHtml(text)}</p>\n`;
 }
 
 function renderTable(tbl) {
@@ -438,11 +628,8 @@ function renderTable(tbl) {
     html += '  <tr>\n';
     for (let c = 0; c < tbl.tCols; c++) {
       const cell = tbl.grid[r][c];
-      const text = cell.texts
-        .sort((a, b) => a.y - b.y || a.x - b.x)
-        .map(t => escapeHtml(t.str))
-        .join(' ')
-        .trim();
+      const text = buildLineText(cell.texts);
+      const escapedText = escapeHtml(text);
 
       let align = 'left';
       let noWrap = '';
@@ -451,7 +638,7 @@ function renderTable(tbl) {
         noWrap = 'white-space:nowrap;';
       }
 
-      html += `    <td style="border:1px solid #000;padding:4px 6px;text-align:${align};${noWrap}">${text}</td>\n`;
+      html += `    <td style="border:1px solid #000;padding:4px 6px;text-align:${align};${noWrap}">${escapedText}</td>\n`;
     }
     html += '  </tr>\n';
   }
@@ -465,34 +652,103 @@ function renderTable(tbl) {
 
 const NIF_CODE_REGEX = /\b([A-Z]\d{7,8})\b/;
 
-function extractRecipient(textItems) {
-  // Sort by Y (top first), then X for items on same line
+function extractRecipient(page) {
+  if (!page) return '';
+  const { textItems, height } = page;
   const sorted = [...textItems].sort((a, b) => a.y - b.y || a.x - b.x);
-
-  // Group into lines
   const lines = groupIntoLines(sorted);
+  const upperLimit = height * RECIPIENT_SEARCH_HEIGHT_RATIO;
 
   for (const line of lines) {
-    const lineStr = line.items
-      .sort((a, b) => a.x - b.x)
-      .map(it => it.str)
-      .join(' ');
+    if (line.y > upperLimit) continue;
+    const lineStr = buildLineText(line.items);
     const m = lineStr.match(NIF_CODE_REGEX);
     if (m) {
       const afterNif = lineStr.substring(m.index + m[1].length).trim();
       if (afterNif) return afterNif;
-      return m[1];    // fallback: use NIF itself
+      return '';
     }
   }
-  return 'output';    // fallback
+  return '';
+}
+
+const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const EMAIL_BLACKLIST = new Set(['conta@nmeconomista.com']);
+
+function extractToEmail(page) {
+  if (!page) return '';
+  const lines = groupIntoLines(page.textItems).sort((a, b) => a.y - b.y || a.x - b.x);
+
+  for (const line of lines) {
+    const text = buildLineText(line.items);
+    const anchorMatch = text.match(/^A\s+(.+)/i);
+    if (anchorMatch) {
+      const compact = anchorMatch[1].replace(/\s+/g, '');
+      const anchorEmail = findFirstEmail(compact);
+      if (anchorEmail) return anchorEmail;
+    }
+  }
+
+  const candidates = [];
+  for (const line of lines) {
+    const text = buildLineText(line.items);
+    if (!text) continue;
+    collectEmails(text, line.y, candidates);
+    const compact = text.replace(/\s+/g, '');
+    if (compact !== text) {
+      collectEmails(compact, line.y, candidates);
+    }
+  }
+
+  if (!candidates.length) return '';
+  candidates.sort((a, b) => a.y - b.y);
+  const topY = candidates[0].y;
+  const topCandidates = candidates.filter(c => Math.abs(c.y - topY) <= EPS);
+  const uniqueEmails = Array.from(new Set(topCandidates.map(c => c.email)));
+  return uniqueEmails.length === 1 ? uniqueEmails[0] : '';
+}
+
+function extractSubject(page) {
+  if (!page) return DEFAULT_SUBJECT;
+  const lines = groupIntoLines(page.textItems).sort((a, b) => a.y - b.y || a.x - b.x);
+  for (let i = 0; i < lines.length; i++) {
+    const text = buildLineText(lines[i].items);
+    if (SUBJECT_ANCHOR_REGEX.test(text)) {
+      for (let j = i - 1; j >= 0; j--) {
+        const signer = buildLineText(lines[j].items);
+        if (signer) {
+          return `${DEFAULT_SUBJECT} ${signer}`;
+        }
+      }
+      break;
+    }
+  }
+  return DEFAULT_SUBJECT;
+}
+
+function collectEmails(text, y, list) {
+  const matches = text.matchAll(new RegExp(EMAIL_REGEX.source, 'ig'));
+  for (const match of matches) {
+    const raw = match[0];
+    const email = raw.toLowerCase();
+    if (EMAIL_BLACKLIST.has(email)) continue;
+    list.push({ email, y });
+  }
+}
+
+function findFirstEmail(text) {
+  const match = text.match(EMAIL_REGEX);
+  if (!match) return '';
+  const email = match[0].toLowerCase();
+  return EMAIL_BLACKLIST.has(email) ? '' : email;
 }
 
 // ══════════════════════════════════════════════════════════════
 //  Filename sanitisation
 // ══════════════════════════════════════════════════════════════
 
-function sanitizeFilename(name) {
-  return name
+function sanitizeFileName(name) {
+  return String(name || '')
     .replace(/[\\/:*?"<>|]/g, '_')
     .trim()
     .substring(0, 120);
@@ -502,8 +758,7 @@ function sanitizeFilename(name) {
 //  EML generation (RFC 2822 + HTML body)
 // ══════════════════════════════════════════════════════════════
 
-function buildEml(bodyHtml) {
-  const boundary = '----=_Part_' + crypto.randomUUID();
+function buildEml(bodyHtml, { toEmail, subject }) {
   const date     = new Date().toUTCString();
 
   const fullHtml = `<!DOCTYPE html>
@@ -515,66 +770,68 @@ ${bodyHtml}
   const lines = [
     'MIME-Version: 1.0',
     `Date: ${date}`,
-    'Subject: ',
-    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    toEmail ? `To: ${toEmail}` : null,
+    `Subject: ${rfc2047EncodeHeaderValue(subject)}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
     '',
-    '--' + boundary,
-    'Content-Type: text/html; charset=utf-8',
-    'Content-Transfer-Encoding: quoted-printable',
-    '',
-    quotedPrintableEncode(fullHtml),
-    '',
-    '--' + boundary + '--',
+    emlBodyBase64EncodeWithWrap(fullHtml),
     ''
-  ];
+  ].filter(Boolean);
 
   return lines.join('\r\n');
 }
 
-/** Very minimal quoted-printable encoder */
-function quotedPrintableEncode(str) {
-  const encoded = [];
-  const rawLines = str.split('\n');
-  for (const rawLine of rawLines) {
-    let line = '';
-    for (let i = 0; i < rawLine.length; i++) {
-      const c = rawLine.charCodeAt(i);
-      if (c === 9 || (c >= 32 && c <= 126 && c !== 61)) {
-        line += rawLine[i];
-      } else {
-        // encode as =XX (multi-byte for non-ASCII)
-        const bytes = new TextEncoder().encode(rawLine[i]);
-        for (const b of bytes) {
-          line += '=' + b.toString(16).toUpperCase().padStart(2, '0');
-        }
-      }
-      // soft line break at 75 chars
-      if (line.length >= 73) {
-        encoded.push(line + '=');
-        line = '';
-      }
-    }
-    encoded.push(line);
+function rfc2047EncodeHeaderValue(value) {
+  const bytes = new TextEncoder().encode(String(value || ''));
+  const base64 = base64FromBytes(bytes);
+  return `=?UTF-8?B?${base64}?=`;
+}
+
+function emlBodyBase64EncodeWithWrap(html) {
+  const bytes = new TextEncoder().encode(String(html || ''));
+  const base64 = base64FromBytes(bytes);
+  return base64.match(/.{1,76}/g)?.join('\r\n') || '';
+}
+
+function base64FromBytes(bytes) {
+  let binary = '';
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
   }
-  return encoded.join('\r\n');
+  return btoa(binary);
 }
 
 // ── Download helper ───────────────────────────────────────────
 function downloadBlob(text, filename, mime) {
   const blob = new Blob([text], { type: mime });
   const a    = document.createElement('a');
-  a.href     = URL.createObjectURL(blob);
+  const url  = URL.createObjectURL(blob);
+  a.href     = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(a.href); }, 100);
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
 }
 
 // ── HTML escape ───────────────────────────────────────────────
 function escapeHtml(str) {
-  return str
+  return String(str || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function runSelfChecks() {
+  console.assert(sanitizeFileName('Name:Test/Doc') === 'Name_Test_Doc', 'sanitizeFileName failed');
+  const encodedSubject = rfc2047EncodeHeaderValue('Привет');
+  console.assert(encodedSubject.startsWith('=?UTF-8?B?') && encodedSubject.endsWith('?='), 'rfc2047EncodeHeaderValue failed');
+  const wrapped = emlBodyBase64EncodeWithWrap('á'.repeat(120));
+  const lines = wrapped.split('\r\n');
+  console.assert(lines.every(line => line.length <= 76), 'emlBodyBase64EncodeWithWrap failed');
+}
+
+if (new URLSearchParams(window.location.search).has('dev')) {
+  runSelfChecks();
 }

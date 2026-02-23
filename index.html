@@ -23,6 +23,9 @@
       max-width: 480px;
       width: 100%;
     }
+    .card--wide {
+      max-width: 960px;
+    }
     h1 { font-size: 22px; margin-bottom: 24px; color: #222; }
     label { display: block; font-weight: 600; margin-bottom: 6px; color: #444; }
     input[type="file"], input[type="password"], select {
@@ -60,10 +63,14 @@
       color: #666;
       display: none;
     }
+    #results {
+      margin-top: 16px;
+      overflow-x: auto;
+    }
     #resultsTable {
       width: 100%;
+      min-width: 720px;
       border-collapse: collapse;
-      margin-top: 16px;
       font-size: 12px;
       color: #333;
     }
@@ -101,7 +108,7 @@
   </div>
 
   <!-- Main app (hidden until password is correct) -->
-  <div id="appCard" class="card" style="display:none;">
+  <div id="appCard" class="card card--wide" style="display:none;">
     <h1>Converto &mdash; PDF to EML</h1>
 
     <label for="pdfFile">Select PDFs (up to 20)</label>

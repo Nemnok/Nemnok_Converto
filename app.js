@@ -433,7 +433,7 @@ function renderTextLine(line) {
 }
 
 function renderTable(tbl) {
-  let html = '<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:8px 0;">\n';
+  let html = '<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:8px 0;">\n';
   for (let r = 0; r < tbl.tRows; r++) {
     html += '  <tr>\n';
     for (let c = 0; c < tbl.tCols; c++) {

@@ -1,3 +1,4 @@
 [
-  { "id": "default", "label": "Default", "path": "signatures/default.htm" }
+  { "id": "default", "label": "Default", "path": "signatures/default.htm" },
+  { "id": "firma_conta2", "label": "FIRMA (conta2@nmeconomista.com)", "path": "signatures/FIRMA (conta2@nmeconomista.com).htm" }
 ]

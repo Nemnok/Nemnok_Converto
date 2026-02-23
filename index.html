@@ -54,6 +54,39 @@
       min-height: 20px;
     }
     #status.error { color: #c00; }
+    #downloadHint {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #666;
+      display: none;
+    }
+    #resultsTable {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 12px;
+      color: #333;
+    }
+    #resultsTable th, #resultsTable td {
+      border: 1px solid #ddd;
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    #resultsTable th {
+      background: #f1f3f5;
+      font-weight: 600;
+    }
+    .status-pill {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 11px;
+    }
+    .status-pending { background: #f1f3f5; }
+    .status-processing { background: #e7f3ff; color: #005fa3; }
+    .status-done { background: #e6f4ea; color: #1e7e34; }
+    .status-error { background: #fdecea; color: #c00; }
     #pwError { color: #c00; font-size: 13px; margin-top: 8px; min-height: 18px; }
   </style>
 </head>
@@ -71,16 +104,19 @@
   <div id="appCard" class="card" style="display:none;">
     <h1>Converto &mdash; PDF to EML</h1>
 
-    <label for="pdfFile">Select PDF</label>
-    <input type="file" id="pdfFile" accept=".pdf">
+    <label for="pdfFile">Select PDFs (up to 20)</label>
+    <input type="file" id="pdfFile" accept=".pdf" multiple>
 
     <label for="signatureSelect">Signature</label>
     <select id="signatureSelect">
       <option value="">— none —</option>
     </select>
 
-    <button id="generateBtn" disabled>Generate EML</button>
+    <button id="generateBtn" disabled>Generate</button>
+    <button id="downloadAllBtn" disabled style="margin-top:10px;background:#2d8f4a;">Download all</button>
+    <div id="downloadHint">Your browser may ask to allow multiple downloads.</div>
     <div id="status"></div>
+    <div id="results"></div>
   </div>
 
   <script>

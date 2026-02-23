@@ -134,7 +134,7 @@ function extractLineSegments(ops, pageH) {
 
   const OPS = pdfjsLib.OPS;
 
-  const tx = (x, y) => [
+  const transformPoint = (x, y) => [
     ctm[0] * x + ctm[2] * y + ctm[4],
     pageH - (ctm[1] * x + ctm[3] * y + ctm[5])
   ];
@@ -168,18 +168,18 @@ function extractLineSegments(ops, pageH) {
         [cx, cy] = [mx, my];
         break;
       case OPS.lineTo: {
-        const [x0, y0] = tx(cx, cy);
-        const [x1, y1] = tx(args[0], args[1]);
+        const [x0, y0] = transformPoint(cx, cy);
+        const [x1, y1] = transformPoint(args[0], args[1]);
         segs.push({ x0, y0, x1, y1 });
         [cx, cy] = [args[0], args[1]];
         break;
       }
       case OPS.rectangle: {
         const [rx, ry, rw, rh] = args;
-        const [ax, ay] = tx(rx, ry);
-        const [bx, by] = tx(rx + rw, ry);
-        const [dx, dy] = tx(rx + rw, ry + rh);
-        const [ex, ey] = tx(rx, ry + rh);
+        const [ax, ay] = transformPoint(rx, ry);
+        const [bx, by] = transformPoint(rx + rw, ry);
+        const [dx, dy] = transformPoint(rx + rw, ry + rh);
+        const [ex, ey] = transformPoint(rx, ry + rh);
         segs.push({ x0: ax, y0: ay, x1: bx, y1: by });
         segs.push({ x0: bx, y0: by, x1: dx, y1: dy });
         segs.push({ x0: dx, y0: dy, x1: ex, y1: ey });
@@ -187,8 +187,8 @@ function extractLineSegments(ops, pageH) {
         break;
       }
       case OPS.closePath: {
-        const [x0, y0] = tx(cx, cy);
-        const [x1, y1] = tx(mx, my);
+        const [x0, y0] = transformPoint(cx, cy);
+        const [x1, y1] = transformPoint(mx, my);
         if (Math.abs(x0 - x1) > 0.5 || Math.abs(y0 - y1) > 0.5)
           segs.push({ x0, y0, x1, y1 });
         [cx, cy] = [mx, my];
@@ -203,7 +203,8 @@ function extractLineSegments(ops, pageH) {
 //  Table detection & HTML build
 // ══════════════════════════════════════════════════════════════
 
-const EPS = 3;   // coordinate tolerance in PDF points
+// Tolerance in PDF points (~1mm) for coordinate clustering and snapping
+const EPS = 3;
 
 function near(a, b) { return Math.abs(a - b) <= EPS; }
 
@@ -362,8 +363,8 @@ function detectTables(segments, textItems) {
 }
 
 // ── Number format detection (3.426,64 style) ──────────────────
-const NUM_RE = /^-?\d{1,3}(?:\.\d{3})*(?:,\d+)?$/;
-function isEuropeanNumber(s) { return NUM_RE.test(s.trim()); }
+const EUROPEAN_NUMBER_REGEX = /^-?\d{1,3}(?:\.\d{3})*(?:,\d+)?$/;
+function isEuropeanNumber(s) { return EUROPEAN_NUMBER_REGEX.test(s.trim()); }
 
 // ── Build HTML for one page ──────────────────────────────────
 function buildPageHtml(page) {
@@ -462,7 +463,7 @@ function renderTable(tbl) {
 //  Recipient extraction
 // ══════════════════════════════════════════════════════════════
 
-const NIF_RE = /\b([A-Z]\d{7,8})\b/;
+const NIF_CODE_REGEX = /\b([A-Z]\d{7,8})\b/;
 
 function extractRecipient(textItems) {
   // Sort by Y (top first), then X for items on same line
@@ -476,7 +477,7 @@ function extractRecipient(textItems) {
       .sort((a, b) => a.x - b.x)
       .map(it => it.str)
       .join(' ');
-    const m = lineStr.match(NIF_RE);
+    const m = lineStr.match(NIF_CODE_REGEX);
     if (m) {
       const afterNif = lineStr.substring(m.index + m[1].length).trim();
       if (afterNif) return afterNif;
@@ -502,7 +503,7 @@ function sanitizeFilename(name) {
 // ══════════════════════════════════════════════════════════════
 
 function buildEml(bodyHtml) {
-  const boundary = '----=_Part_' + Date.now();
+  const boundary = '----=_Part_' + crypto.randomUUID();
   const date     = new Date().toUTCString();
 
   const fullHtml = `<!DOCTYPE html>

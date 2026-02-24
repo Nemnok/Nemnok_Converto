@@ -17,7 +17,7 @@ const resultsEl      = document.getElementById('results');
 const downloadHint   = document.getElementById('downloadHint');
 
 // ── State ─────────────────────────────────────────────────────
-const MAX_FILES      = 20;
+const MAX_FILES      = 50;
 const DEFAULT_SUBJECT = 'MODELO 347';
 const MIN_DOWNLOAD_DELAY_MS = 400;
 const MAX_DOWNLOAD_DELAY_MS = 800;

@@ -283,11 +283,14 @@ async function extractPage(page) {
     return { str: it.str, x, y: y - h, w, h, fontName: it.fontName };
   });
 
+  // ── annotations (for mailto: links) ─────────────────────────
+  const annotations = await page.getAnnotations();
+
   // ── lines from operatorList ─────────────────────────────────
   const ops      = await page.getOperatorList();
   const segments = extractLineSegments(ops, height);
 
-  return { textItems, segments, width: viewport.width, height };
+  return { textItems, segments, annotations, width: viewport.width, height };
 }
 
 // ── Extract line segments from operator list ──────────────────
@@ -694,22 +697,45 @@ function extractToEmail(page) {
     const firstIdx = sortedItems.findIndex(it => normalizePdfText(it.str) !== '');
     if (firstIdx === -1) continue;
     const firstToken = normalizePdfText(sortedItems[firstIdx].str);
-    if (!/^A:?$/i.test(firstToken)) continue;
 
-    // Build candidate via buildLineText, then strip invisible chars and whitespace
-    const itemsAfterA = sortedItems.slice(firstIdx + 1);
-    let candidate = stripInvisibleChars(buildLineText(itemsAfterA)).replace(/\s+/g, '');
+    let candidate = '';
+
+    if (/^A:?$/i.test(firstToken)) {
+      // Case 1: "A" is a separate text item
+      const itemsAfterA = sortedItems.slice(firstIdx + 1);
+      candidate = stripInvisibleChars(buildLineText(itemsAfterA)).replace(/\s+/g, '');
+    } else if (/^A:?\s/i.test(firstToken)) {
+      // Case 2: "A" and email are in the same text item (e.g. "A club@leroymerlin.es")
+      const afterA = firstToken.replace(/^A:?\s*/i, '');
+      const itemsAfterA = sortedItems.slice(firstIdx + 1);
+      const rest = buildLineText(itemsAfterA);
+      candidate = stripInvisibleChars(afterA + (rest ? ' ' + rest : '')).replace(/\s+/g, '');
+    } else {
+      continue;
+    }
 
     // If email not found, append next line's text as continuation (also stripped)
     if (!findFirstEmail(candidate) && i + 1 < lines.length) {
       candidate += stripInvisibleChars(buildLineText(lines[i + 1].items)).replace(/\s+/g, '');
     }
 
-    const email = findFirstEmail(candidate);
-    if (!email && new URLSearchParams(window.location.search).has('dev')) {
-      console.log('[extractToEmail] A-line found but no email. candidate:', candidate,
-        'charCodes:', Array.from(candidate).map(c => c.codePointAt(0).toString(16)));
+    // If still no email in text, check mailto: annotations near the A-line
+    if (!findFirstEmail(candidate) && page.annotations) {
+      const aLineY = lines[i].y;
+      const yTolerance = 20;
+      for (const ann of page.annotations) {
+        const url = ann.url || ann.unsafeUrl || '';
+        if (!url.startsWith('mailto:')) continue;
+        // ann.rect = [x1, y1, x2, y2] in PDF coords; convert y to page coords
+        const annY = page.height - ann.rect[3];
+        if (Math.abs(annY - aLineY) <= yTolerance) {
+          const mailtoEmail = url.replace(/^mailto:/i, '').split('?')[0].toLowerCase();
+          if (mailtoEmail && !EMAIL_BLACKLIST.has(mailtoEmail)) return mailtoEmail;
+        }
+      }
     }
+
+    const email = findFirstEmail(candidate);
     return email;
   }
   return '';

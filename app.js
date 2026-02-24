@@ -561,15 +561,33 @@ const EUROPEAN_NUMBER_REGEX = /^-?\d{1,3}(?:\.\d{3})*(?:,\d+)?$/;
 function isEuropeanNumber(s) { return EUROPEAN_NUMBER_REGEX.test(s.trim()); }
 
 // ── Quarterly amounts table fallback ──────────────────────────
-// Detects a free-text "quarterly amounts" pattern that lacks stroke lines:
-//   Header line: tokens 1T 2T 3T 4T Total (in order, allow extra spaces)
-//   Next non-empty line: starts with "Importes" + exactly 5 European numbers
-// Returns { headerIdx, importesIdx, values } or null.
+// Detects a free-text "quarterly amounts" pattern that lacks stroke lines.
+// Uses X-coordinate alignment so missing quarter values leave blank cells
+// without shifting other values left.
+//
+//   Header line: tokens 1T 2T 3T 4T Total (in order)
+//   Next non-empty line: starts with "Importes" + European-number items
+//
+// Returns { headerIdx, importesIdx, values, colMidX } or null.
+// values is always a 5-element array ['', ...] with '' for blank columns.
+const QUARTER_LABELS = ['1T', '2T', '3T', '4T', 'Total'];
 function detectQuarterTable(lines) {
   const QUARTER_HEADER = /\b1T\b.*\b2T\b.*\b3T\b.*\b4T\b.*\bTotal\b/i;
   for (let i = 0; i < lines.length; i++) {
     const headerText = buildLineText(lines[i].items);
     if (!QUARTER_HEADER.test(headerText)) continue;
+
+    // Locate each label's midX from its own text item
+    const headerItems = [...lines[i].items].sort((a, b) => a.x - b.x);
+    const colMidX = QUARTER_LABELS.map(label => {
+      const item = headerItems.find(
+        it => normalizePdfText(it.str).toUpperCase() === label.toUpperCase()
+      );
+      return item ? item.x + item.w / 2 : null;
+    });
+
+    // Need at least 2 known column positions for meaningful alignment
+    if (colMidX.filter(x => x !== null).length < 2) continue;
 
     // Find next non-empty line
     let j = i + 1;
@@ -579,12 +597,27 @@ function detectQuarterTable(lines) {
     const importesText = buildLineText(lines[j].items);
     if (!/^importes\b/i.test(importesText)) continue;
 
-    // Extract tokens after "Importes"
-    const tokens = importesText.replace(/^importes\s*/i, '').trim().split(/\s+/);
-    if (tokens.length !== 5) continue;
-    if (!tokens.every(t => isEuropeanNumber(t))) continue;
+    // Extract numeric items from the Importes line
+    const numericItems = lines[j].items.filter(
+      it => isEuropeanNumber(normalizePdfText(it.str))
+    );
+    if (!numericItems.length) continue;
 
-    return { headerIdx: i, importesIdx: j, values: tokens };
+    // Assign each number to the nearest header column by midX
+    const values = ['', '', '', '', ''];
+    for (const numItem of numericItems) {
+      const numMidX = numItem.x + numItem.w / 2;
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (let c = 0; c < QUARTER_LABELS.length; c++) {
+        if (colMidX[c] === null) continue;
+        const dist = Math.abs(numMidX - colMidX[c]);
+        if (dist < bestDist) { bestDist = dist; bestIdx = c; }
+      }
+      if (bestIdx >= 0) values[bestIdx] = normalizePdfText(numItem.str);
+    }
+
+    return { headerIdx: i, importesIdx: j, values, colMidX };
   }
   return null;
 }
@@ -624,12 +657,14 @@ function buildPageHtml(page, pageIndex) {
   const quarterMatch = detectQuarterTable(lines);
   const skipLineIndices = new Set();
   if (quarterMatch) {
-    const { headerIdx, importesIdx, values } = quarterMatch;
+    const { headerIdx, importesIdx, values, colMidX } = quarterMatch;
     skipLineIndices.add(headerIdx);
     skipLineIndices.add(importesIdx);
     blocks.push({ type: 'quarterTable', y: lines[headerIdx].y, data: { values } });
     if (DEV_MODE) {
-      console.log(`[dev] page ${pageIndex + 1}: quarterly table fallback triggered (headerIdx=${headerIdx} importesIdx=${importesIdx})`);
+      const valLog = QUARTER_LABELS.map((l, i) => `${l}=${values[i] || '(blank)'}`).join(' ');
+      console.log(`[dev] page ${pageIndex + 1}: Quarter table fallback triggered: ${valLog}`);
+      console.log(`[dev]   colMidX: ${colMidX.map((x, i) => `${QUARTER_LABELS[i]}=${x !== null ? x.toFixed(1) : 'n/a'}`).join(' ')}`);
     }
   }
 
@@ -752,8 +787,9 @@ function renderQuarterTable({ values }) {
   html += '  <tr>\n';
   for (let c = 0; c < row.length; c++) {
     const text = row[c];
-    const align = c === 0 ? 'left' : 'right';
-    const noWrap = c === 0 ? '' : 'white-space:nowrap;';
+    const isNumCol = c > 0;
+    const align = isNumCol ? 'right' : 'left';
+    const noWrap = isNumCol ? 'white-space:nowrap;' : '';
     html += `    <td ${tdBase}text-align:${align};${noWrap}">${escapeHtml(text)}</td>\n`;
   }
   html += '  </tr>\n';

@@ -560,6 +560,35 @@ function detectTables(segments, textItems) {
 const EUROPEAN_NUMBER_REGEX = /^-?\d{1,3}(?:\.\d{3})*(?:,\d+)?$/;
 function isEuropeanNumber(s) { return EUROPEAN_NUMBER_REGEX.test(s.trim()); }
 
+// ── Quarterly amounts table fallback ──────────────────────────
+// Detects a free-text "quarterly amounts" pattern that lacks stroke lines:
+//   Header line: tokens 1T 2T 3T 4T Total (in order, allow extra spaces)
+//   Next non-empty line: starts with "Importes" + exactly 5 European numbers
+// Returns { headerIdx, importesIdx, values } or null.
+function detectQuarterTable(lines) {
+  const QUARTER_HEADER = /\b1T\b.*\b2T\b.*\b3T\b.*\b4T\b.*\bTotal\b/i;
+  for (let i = 0; i < lines.length; i++) {
+    const headerText = buildLineText(lines[i].items);
+    if (!QUARTER_HEADER.test(headerText)) continue;
+
+    // Find next non-empty line
+    let j = i + 1;
+    while (j < lines.length && !buildLineText(lines[j].items)) j++;
+    if (j >= lines.length) continue;
+
+    const importesText = buildLineText(lines[j].items);
+    if (!/^importes\b/i.test(importesText)) continue;
+
+    // Extract tokens after "Importes"
+    const tokens = importesText.replace(/^importes\s*/i, '').trim().split(/\s+/);
+    if (tokens.length !== 5) continue;
+    if (!tokens.every(t => isEuropeanNumber(t))) continue;
+
+    return { headerIdx: i, importesIdx: j, values: tokens };
+  }
+  return null;
+}
+
 // ── Dev diagnostics mode (?dev) ───────────────────────────────
 const DEV_MODE = new URLSearchParams(window.location.search).has('dev');
 
@@ -590,8 +619,23 @@ function buildPageHtml(page, pageIndex) {
 
   // Group free text into lines by similar Y
   const lines = groupIntoLines(freeItems);
-  for (const line of lines) {
-    blocks.push({ type: 'text', y: line.y, data: line });
+
+  // Fallback: detect quarterly amounts table from free-text lines
+  const quarterMatch = detectQuarterTable(lines);
+  const skipLineIndices = new Set();
+  if (quarterMatch) {
+    const { headerIdx, importesIdx, values } = quarterMatch;
+    skipLineIndices.add(headerIdx);
+    skipLineIndices.add(importesIdx);
+    blocks.push({ type: 'quarterTable', y: lines[headerIdx].y, data: { values } });
+    if (DEV_MODE) {
+      console.log(`[dev] page ${pageIndex + 1}: quarterly table fallback triggered (headerIdx=${headerIdx} importesIdx=${importesIdx})`);
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (skipLineIndices.has(i)) continue;
+    blocks.push({ type: 'text', y: lines[i].y, data: lines[i] });
   }
 
   blocks.sort((a, b) => a.y - b.y);
@@ -601,6 +645,8 @@ function buildPageHtml(page, pageIndex) {
   for (const block of blocks) {
     if (block.type === 'table') {
       html += renderTable(block.data);
+    } else if (block.type === 'quarterTable') {
+      html += renderQuarterTable(block.data);
     } else {
       html += renderTextLine(block.data);
     }
@@ -689,6 +735,28 @@ function renderTable(tbl) {
     }
     html += '  </tr>\n';
   }
+  html += '</table>\n';
+  return html;
+}
+
+function renderQuarterTable({ values }) {
+  const headers = ['', '1T', '2T', '3T', '4T', 'Total'];
+  const row = ['Importes', ...values];
+  const tdBase = 'style="border:1px solid #000;padding:4px 6px;font-family:Calibri,Arial,sans-serif;font-size:11pt;';
+  let html = '<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:8px 0;">\n';
+  html += '  <tr>\n';
+  for (const h of headers) {
+    html += `    <th ${tdBase}text-align:center;">${escapeHtml(h)}</th>\n`;
+  }
+  html += '  </tr>\n';
+  html += '  <tr>\n';
+  for (let c = 0; c < row.length; c++) {
+    const text = row[c];
+    const align = c === 0 ? 'left' : 'right';
+    const noWrap = c === 0 ? '' : 'white-space:nowrap;';
+    html += `    <td ${tdBase}text-align:${align};${noWrap}">${escapeHtml(text)}</td>\n`;
+  }
+  html += '  </tr>\n';
   html += '</table>\n';
   return html;
 }

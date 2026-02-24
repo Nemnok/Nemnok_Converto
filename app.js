@@ -621,6 +621,10 @@ function normalizePdfText(str) {
     .trim();
 }
 
+function stripInvisibleChars(str) {
+  return String(str || '').replace(/[\u200B\u200C\u200D\uFEFF\u00AD\u00A0]/g, '');
+}
+
 function renderTextLine(line) {
   const text = buildLineText(line.items);
   if (!text) return '';
@@ -692,16 +696,21 @@ function extractToEmail(page) {
     const firstToken = normalizePdfText(sortedItems[firstIdx].str);
     if (!/^A:?$/i.test(firstToken)) continue;
 
-    // Build candidate: items after the "A" token, stripped of whitespace
-    let candidate = sortedItems.slice(firstIdx + 1)
-      .map(it => normalizePdfText(it.str)).join('').replace(/\s+/g, '');
+    // Build candidate via buildLineText, then strip invisible chars and whitespace
+    const itemsAfterA = sortedItems.slice(firstIdx + 1);
+    let candidate = stripInvisibleChars(buildLineText(itemsAfterA)).replace(/\s+/g, '');
 
-    // If email not found, append next line's text as continuation
+    // If email not found, append next line's text as continuation (also stripped)
     if (!findFirstEmail(candidate) && i + 1 < lines.length) {
-      candidate += buildLineText(lines[i + 1].items).replace(/\s+/g, '');
+      candidate += stripInvisibleChars(buildLineText(lines[i + 1].items)).replace(/\s+/g, '');
     }
 
-    return findFirstEmail(candidate);
+    const email = findFirstEmail(candidate);
+    if (!email && new URLSearchParams(window.location.search).has('dev')) {
+      console.log('[extractToEmail] A-line found but no email. candidate:', candidate,
+        'charCodes:', Array.from(candidate).map(c => c.codePointAt(0).toString(16)));
+    }
+    return email;
   }
   return '';
 }

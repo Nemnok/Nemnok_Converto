@@ -158,8 +158,8 @@ async function processPdfFile(file) {
   const subject = extractSubject(firstPage);
 
   let bodyHtml = '';
-  for (const pg of pages) {
-    bodyHtml += buildPageHtml(pg);
+  for (let i = 0; i < pages.length; i++) {
+    bodyHtml += buildPageHtml(pages[i], i);
   }
 
   const sigId = sigSelect.value;
@@ -374,6 +374,8 @@ function extractLineSegments(ops, pageH) {
 
 // Tolerance in PDF points (~1mm) for coordinate clustering and snapping
 const EPS = 3;
+// Tolerance for merging edge segment gaps (handles dashed/multi-segment borders)
+const EDGE_EPS = 6;
 
 function near(a, b) { return Math.abs(a - b) <= EPS; }
 
@@ -413,7 +415,7 @@ function detectTables(segments, textItems) {
     }
   }
 
-  if (hSegs.length < 2 || vSegs.length < 2) return { tables: [], usedTextIndices: new Set() };
+  if (hSegs.length < 2 || vSegs.length < 2) return { tables: [], usedTextIndices: new Set(), hSegsCount: hSegs.length, vSegsCount: vSegs.length, xGrid: [], yGrid: [] };
 
   // Build grids
   const xVals = [];
@@ -424,18 +426,41 @@ function detectTables(segments, textItems) {
   const xGrid = clusterValues(xVals, EPS);
   const yGrid = clusterValues(yVals, EPS);
 
-  if (xGrid.length < 2 || yGrid.length < 2) return { tables: [], usedTextIndices: new Set() };
+  if (xGrid.length < 2 || yGrid.length < 2) return { tables: [], usedTextIndices: new Set(), hSegsCount: hSegs.length, vSegsCount: vSegs.length, xGrid, yGrid };
 
   // For each potential cell, check that bounding edges exist
   // We consider a "table region" as a connected rectangular block of cells
   // that have at least their four edges present in the segments.
 
-  // Build edge look-ups
+  // Build edge look-ups using interval coverage to handle multi-segment borders
+  /**
+   * Returns true if sorted segments collectively cover the interval [a, b]
+   * within EDGE_EPS tolerance (i.e. no gap between consecutive segments is
+   * wider than EDGE_EPS and the merged coverage reaches b).
+   * @param {Array<{a:number,b:number}>} candidates - segments sorted by .a
+   * @param {number} a - interval start
+   * @param {number} b - interval end
+   */
+  function edgeCovers(candidates, a, b) {
+    let reached = a - EDGE_EPS;
+    for (const seg of candidates) {
+      if (seg.a > reached + EDGE_EPS) return false;
+      reached = Math.max(reached, seg.b);
+      if (reached >= b - EDGE_EPS) return true;
+    }
+    return reached >= b - EDGE_EPS;
+  }
   function hasHEdge(x0, x1, y) {
-    return hSegs.some(s => near(s.v, y) && s.a <= x0 + EPS && s.b >= x1 - EPS);
+    const cands = hSegs
+      .filter(s => near(s.v, y) && s.b >= x0 - EDGE_EPS && s.a <= x1 + EDGE_EPS)
+      .sort((a, b) => a.a - b.a);
+    return edgeCovers(cands, x0, x1);
   }
   function hasVEdge(y0, y1, x) {
-    return vSegs.some(s => near(s.v, x) && s.a <= y0 + EPS && s.b >= y1 - EPS);
+    const cands = vSegs
+      .filter(s => near(s.v, x) && s.b >= y0 - EDGE_EPS && s.a <= y1 + EDGE_EPS)
+      .sort((a, b) => a.a - b.a);
+    return edgeCovers(cands, y0, y1);
   }
 
   // Build cell presence matrix
@@ -528,17 +553,27 @@ function detectTables(segments, textItems) {
     tables.push({ top: tTop, left: tLeft, bottom: tBottom, right: tRight, grid, tRows, tCols });
   }
 
-  return { tables, usedTextIndices };
+  return { tables, usedTextIndices, hSegsCount: hSegs.length, vSegsCount: vSegs.length, xGrid, yGrid };
 }
 
 // ── Number format detection (3.426,64 style) ──────────────────
 const EUROPEAN_NUMBER_REGEX = /^-?\d{1,3}(?:\.\d{3})*(?:,\d+)?$/;
 function isEuropeanNumber(s) { return EUROPEAN_NUMBER_REGEX.test(s.trim()); }
 
+// ── Dev diagnostics mode (?dev) ───────────────────────────────
+const DEV_MODE = new URLSearchParams(window.location.search).has('dev');
+
 // ── Build HTML for one page ──────────────────────────────────
-function buildPageHtml(page) {
+function buildPageHtml(page, pageIndex) {
   const { textItems, segments } = page;
-  const { tables, usedTextIndices } = detectTables(segments, textItems);
+  const { tables, usedTextIndices, hSegsCount, vSegsCount, xGrid, yGrid } = detectTables(segments, textItems);
+
+  if (DEV_MODE) {
+    console.log(`[dev] page ${pageIndex + 1}: hSegs=${hSegsCount} vSegs=${vSegsCount} tables=${tables.length} xGrid=${xGrid.length} yGrid=${yGrid.length}`);
+    for (const t of tables) {
+      console.log(`  table: tRows=${t.tRows} tCols=${t.tCols} top=${t.top.toFixed(1)} left=${t.left.toFixed(1)}`);
+    }
+  }
 
   // Sort tables top‑to‑bottom
   tables.sort((a, b) => a.top - b.top);
@@ -894,6 +929,6 @@ function runSelfChecks() {
   console.assert(lines.every(line => line.length <= 76), 'emlBodyBase64EncodeWithWrap failed');
 }
 
-if (new URLSearchParams(window.location.search).has('dev')) {
+if (DEV_MODE) {
   runSelfChecks();
 }

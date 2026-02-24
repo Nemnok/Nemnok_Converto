@@ -684,15 +684,24 @@ function extractToEmail(page) {
   if (!page) return '';
   const lines = groupIntoLines(page.textItems).sort((a, b) => a.y - b.y || a.x - b.x);
 
-  for (const line of lines) {
-    const text = buildLineText(line.items);
-    if (!text) continue;
-    const anchorMatch = text.match(/^A\s+(.+)/i);
-    if (anchorMatch) {
-      const compact = anchorMatch[1].replace(/\s+/g, '');
-      const anchorEmail = findFirstEmail(compact);
-      if (anchorEmail) return anchorEmail;
+  for (let i = 0; i < lines.length; i++) {
+    const sortedItems = [...lines[i].items].sort((a, b) => a.x - b.x);
+    // Find first item with non-empty normalized text
+    const firstIdx = sortedItems.findIndex(it => normalizePdfText(it.str) !== '');
+    if (firstIdx === -1) continue;
+    const firstToken = normalizePdfText(sortedItems[firstIdx].str);
+    if (!/^A:?$/i.test(firstToken)) continue;
+
+    // Build candidate: items after the "A" token, stripped of whitespace
+    let candidate = sortedItems.slice(firstIdx + 1)
+      .map(it => normalizePdfText(it.str)).join('').replace(/\s+/g, '');
+
+    // If email not found, append next line's text as continuation
+    if (!findFirstEmail(candidate) && i + 1 < lines.length) {
+      candidate += buildLineText(lines[i + 1].items).replace(/\s+/g, '');
     }
+
+    return findFirstEmail(candidate);
   }
   return '';
 }

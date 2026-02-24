@@ -167,7 +167,7 @@ async function processPdfFile(file) {
     bodyHtml += '<br>' + signaturesCache[sigId];
   }
 
-  const eml = buildEml(bodyHtml, { toEmail, subject });
+  const eml = await buildEml(bodyHtml, { toEmail, subject });
   const diagnostics = buildDiagnostics(bodyHtml, eml);
   const baseFilename = buildOutputBaseFilename({
     recipient,
@@ -930,29 +930,113 @@ function sanitizeFileName(name) {
 //  EML generation (RFC 2822 + HTML body)
 // ══════════════════════════════════════════════════════════════
 
-function buildEml(bodyHtml, { toEmail, subject }) {
+async function buildEml(bodyHtml, { toEmail, subject }) {
   const date     = formatRfc2822Date(new Date());
   const toHeaderValue = toEmail ? toEmail : 'undisclosed-recipients:;';
+
+  // Collect local images for CID embedding
+  const inlineImages = await collectLocalImages(bodyHtml);
+
+  // Replace local src with cid: references
+  let processedHtml = bodyHtml;
+  for (const img of inlineImages) {
+    processedHtml = processedHtml.split(img.originalSrc).join('cid:' + img.cid);
+  }
 
   const fullHtml = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:Calibri,Arial,sans-serif;font-size:11pt;">
-${bodyHtml}
+${processedHtml}
 </body></html>`;
 
+  if (inlineImages.length === 0) {
+    // Simple single-part EML (no images)
+    const lines = [
+      'MIME-Version: 1.0',
+      `Date: ${date}`,
+      `To: ${toHeaderValue}`,
+      `Subject: ${rfc2047EncodeHeaderValue(subject)}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      emlBodyBase64EncodeWithWrap(fullHtml),
+      ''
+    ];
+    return lines.join('\r\n');
+  }
+
+  // Multipart/related EML with inline images
+  const boundary = '----=_ConvertoBoundary_001';
   const lines = [
     'MIME-Version: 1.0',
     `Date: ${date}`,
     `To: ${toHeaderValue}`,
     `Subject: ${rfc2047EncodeHeaderValue(subject)}`,
+    `Content-Type: multipart/related; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     emlBodyBase64EncodeWithWrap(fullHtml),
-    ''
   ];
 
+  for (const img of inlineImages) {
+    lines.push(`--${boundary}`);
+    lines.push(`Content-Type: ${img.mimeType}`);
+    lines.push('Content-Transfer-Encoding: base64');
+    lines.push(`Content-ID: <${img.cid}>`);
+    lines.push(`Content-Disposition: inline; filename="${img.filename}"`);
+    lines.push('');
+    lines.push(img.base64Data);
+  }
+
+  lines.push(`--${boundary}--`);
+  lines.push('');
   return lines.join('\r\n');
+}
+
+async function collectLocalImages(html) {
+  const imgRegex = /<img\s[^>]*src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  const images = [];
+  const seen = new Set();
+  let match;
+  let cidCounter = 0;
+
+  while ((match = imgRegex.exec(html)) !== null) {
+    const src = match[1];
+    // Only handle local relative paths (skip http/https/data/cid)
+    if (/^(https?:|data:|cid:)/i.test(src)) continue;
+    if (seen.has(src)) continue;
+    seen.add(src);
+
+    try {
+      const resp = await fetch(src);
+      if (!resp.ok) continue;
+      const buf = await resp.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const base64 = base64FromBytes(bytes);
+      const base64Wrapped = base64.match(/.{1,76}/g)?.join('\r\n') || '';
+
+      cidCounter++;
+      const ext = src.split('.').pop().toLowerCase();
+      const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif' };
+      const mimeType = mimeMap[ext] || 'application/octet-stream';
+      const filename = src.split('/').pop();
+
+      images.push({
+        originalSrc: src,
+        cid: `sigimg-${cidCounter}@converto`,
+        mimeType,
+        filename,
+        base64Data: base64Wrapped
+      });
+    } catch (e) {
+      console.warn('Could not fetch inline image:', src, e);
+    }
+  }
+
+  return images;
 }
 
 function formatRfc2822Date(date) {
